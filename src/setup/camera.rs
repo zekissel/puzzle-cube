@@ -3,6 +3,18 @@ use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseScrollUnit, MouseWheel, MouseButton};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
+pub struct CameraComponent;
+
+impl Plugin for CameraComponent {
+  fn build(&self, app: &mut App) {
+    app.add_systems(Startup, setup_camera);
+    app.add_systems(Update, (
+      orbit_camera_control.run_if(any_with_component::<OrbitState>),
+      reset_camera_angle.run_if(any_with_component::<OrbitState>),
+    ));
+  }
+}
+
 const DEFAULT_RADIUS: f32 = 30.0;
 const DEFAULT_PITCH: f32 = -45.0;
 const DEFAULT_YAW: f32 = 45.0;
@@ -32,6 +44,7 @@ pub struct OrbitSettings {
   pub zoom_sensitivity: f32, /// Exponent per pixel of mouse motion
 
   pub reset_rotate: Option<KeyCode>,
+  pub reset_rotate_m: Option<MouseButton>,
 
   pub rotate_left: Option<KeyCode>,
   pub rotate_right: Option<KeyCode>,
@@ -68,11 +81,12 @@ impl Default for OrbitSettings {
     OrbitSettings {
       orbit_sensitivity: 0.5f32.to_radians(), // 0.1 degree per pixel
       zoom_sensitivity: 0.01,
-      reset_rotate: Some(KeyCode::KeyR),
-      rotate_left: Some(KeyCode::ArrowLeft),
-      rotate_right: Some(KeyCode::ArrowRight),
-      rotate_up: Some(KeyCode::ArrowUp),
-      rotate_down: Some(KeyCode::ArrowDown),
+      reset_rotate: Some(KeyCode::Home),
+      reset_rotate_m: Some(MouseButton::Right),
+      rotate_left: Some(KeyCode::Delete),
+      rotate_right: Some(KeyCode::Insert),
+      rotate_up: Some(KeyCode::PageUp),
+      rotate_down: Some(KeyCode::PageDown),
       orbit_key: Some(MouseButton::Middle),
       scroll_action: Some(OrbitAction::Zoom),
       scroll_line_sensitivity: 16.0, // 1 "line" == 16 "pixels of motion"
@@ -192,6 +206,7 @@ pub fn orbit_camera_control(
 }
 
 pub fn reset_camera_angle(
+  mouse: Res<ButtonInput<MouseButton>>,
   kbd: Res<ButtonInput<KeyCode>>,
   mut q_camera: Query<(
     &OrbitSettings,
@@ -202,7 +217,9 @@ pub fn reset_camera_angle(
 
   let (settings, mut state, mut transform) = q_camera.single_mut();
     
-  if settings.reset_rotate.map(|key| kbd.pressed(key)).unwrap_or(false) || state.is_added() {
+  if settings.reset_rotate_m.map(|mb| mouse.pressed(mb)).unwrap_or(false) ||
+    settings.reset_rotate.map(|key| kbd.pressed(key)).unwrap_or(false) || 
+    state.is_added() {
     state.pitch = DEFAULT_PITCH.to_radians();
     state.yaw = DEFAULT_YAW.to_radians();
     
