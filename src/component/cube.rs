@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 
-
 #[derive(Resource)]
 struct CubeRotate {
   active: bool,
+  speed: f32,
+  scramble_timer: Timer,
 }
-
 
 pub struct CubeModels;
 
@@ -19,28 +19,40 @@ impl Plugin for CubeModels {
       rotate_cube.run_if(any_with_component::<Block>),
       
     ));
-    app.insert_resource(CubeRotate { active: false });
+    app.insert_resource(CubeRotate { 
+      active: false, 
+      speed: 420.0f32,
+      scramble_timer: Timer::from_seconds(4.0, TimerMode::Once) 
+    });
   }
 }
 
-
 #[derive(Component, Default)]
 struct Block;
+
+#[derive(Component)]
+struct Target {
+  translation: Vec3,
+  rotation: Quat,
+}
 
 #[derive(Component)]
 struct BlockRotate {
   axis: Vec3,
   direction: f32,
   active: bool,
+  target: Target,
   timer: Timer,
 }
+
 impl Default for BlockRotate {
   fn default() -> Self {
     BlockRotate { 
       axis: Vec3::X,
       direction: 1.0,
       active: false,
-      timer: Timer::from_seconds(0.25, TimerMode::Repeating),
+      target: Target { translation: Vec3::ZERO, rotation: Quat::IDENTITY },
+      timer: Timer::from_seconds(0.18, TimerMode::Repeating),
     }
   }
 }
@@ -49,7 +61,7 @@ impl Default for BlockRotate {
 struct DefaultPosition(Vec3);
 
 #[derive(Component)]
-struct CubeSettings {
+struct ControlBinds {
   rotate_x_pos: Option<KeyCode>,
   rotate_x_neg: Option<KeyCode>,
   rotate_y_pos: Option<KeyCode>,
@@ -61,11 +73,12 @@ struct CubeSettings {
   top_cw: Option<KeyCode>,
 
   reset_cube: Option<KeyCode>,
+  scramble_cube: Option<KeyCode>,
 }
 
-impl Default for CubeSettings {
+impl Default for ControlBinds {
   fn default() -> Self {
-    CubeSettings {
+    ControlBinds {
       rotate_x_pos: Some(KeyCode::ArrowRight),
       rotate_x_neg: Some(KeyCode::ArrowLeft),
       rotate_y_pos: Some(KeyCode::ArrowUp),
@@ -77,6 +90,7 @@ impl Default for CubeSettings {
       top_cw: Some(KeyCode::KeyA),
 
       reset_cube: Some(KeyCode::KeyR),
+      scramble_cube: Some(KeyCode::KeyT),
     }
   }
 }
@@ -85,12 +99,14 @@ impl Default for CubeSettings {
 struct BlockBundle {
   block: Block,
   scene_bundle: SceneBundle,
-  settings: CubeSettings,
+  settings: ControlBinds,
   default_position: DefaultPosition,
   rotate: BlockRotate,
 }
 
 enum UnpackBlocks { Center, Edge, Corner }
+
+/* MARK: SYSTEMS FOR CUBE SETUP and INITIALIZATION */
 
 fn unpack_coords(name: &str, area: UnpackBlocks) -> (f32, f32, f32) {
 
@@ -216,43 +232,46 @@ fn setup_corners(
 
 
 
+
+/* MARK: SYSTEMS FOR CONTROLLING CUBE */
+
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &CubeSettings)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
+  mut rotating: ResMut<CubeRotate>,
 ) {
 
-  for (mut transform, _cube, binds) in &mut cubes {
+  if rotating.active { return }
+
+  for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
 
     let (c_cc, c_cw, c_up, c_do) = (
       kbd.just_pressed(binds.rotate_x_pos.unwrap()), kbd.just_pressed(binds.rotate_x_neg.unwrap()), 
       kbd.just_pressed(binds.rotate_y_pos.unwrap()), kbd.just_pressed(binds.rotate_y_neg.unwrap())
     );
 
-    if c_cc || c_cw || c_up || c_do {  } else { return }
+    if c_cc || c_cw || c_up || c_do { rotating.active = true; b_rotate.timer.reset(); b_rotate.active = true; } else { return }
 
-    let mut b = 0.0;
-    let mut c = 0.0;
+    if c_cc || c_cw { b_rotate.axis = Vec3::Y; }
+    else if c_up || c_do { b_rotate.axis = Vec3::Z; };
+    if c_cc || c_up { b_rotate.direction = 1.0 } else { b_rotate.direction = -1.0 };
 
-    if c_cc || c_cw { b = 90.0f32.to_radians(); c = 0.0; }
-    else if c_up || c_do { b = 0.0; c = 90.0f32.to_radians(); };
-    if c_cw { b *= -1.0 } else if c_do { c *= -1.0 };
-
-    transform.rotate_around(Vec3::ZERO, Quat::from_euler(EulerRot::XYZ, 0.0, b, c));
+    let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
+    b_rotate.target = Target { translation: tl, rotation: rt };
     
   }
 }
 
 
-
 fn cube_control(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&Transform, &Block, &CubeSettings, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
   mut rotating: ResMut<CubeRotate>,
 ) {
 
-  if rotating.active { return; }
+  if rotating.active { return }
 
-  for (transform, _cube, binds, mut b_rotate) in &mut cubes {
+  for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
 
     let (f_cc, f_cw, t_cc, t_cw) = (
       kbd.just_pressed(binds.front_cc.unwrap()), kbd.just_pressed(binds.front_cw.unwrap()), 
@@ -262,21 +281,41 @@ fn cube_control(
     if f_cc || f_cw || t_cc || t_cw { rotating.active = true; b_rotate.timer.reset(); } else { return }
 
     if f_cc || f_cw {
-      if transform.translation.x >= 2.19 {
+      if transform.translation.x == 2.20 {
         b_rotate.axis = Vec3::X;
         b_rotate.active = true;
         if f_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
+        
+        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
+        b_rotate.target = Target { translation: tl, rotation: rt };
       }
     }
     else if t_cc || t_cw {
-      if transform.translation.y >= 2.19 {
+      if transform.translation.y == 2.20 {
         b_rotate.axis = Vec3::Y;
         b_rotate.active = true;
         if t_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
+        
+        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
+
+        b_rotate.target = Target { translation: tl, rotation: rt };
       }
     }
     
   }
+}
+
+/* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
+fn fetch_target(transform: &mut Transform, b_rotate: &mut BlockRotate) -> (Vec3, Quat) {
+
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 90.0f32.to_radians()));
+
+  let tl = transform.translation;
+  let rt = transform.rotation;
+  // return to same position as beginning of frame
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 90.0f32.to_radians() * -1.0));
+
+  ((tl * 10.0).round() / 10.0, rt)
 }
 
 fn rotate_cube(
@@ -286,34 +325,66 @@ fn rotate_cube(
 ) {
 
   if !rotating.active { return }
+  let mut close = false;
 
   for (mut transform, _cube, mut b_rotate) in &mut cubes {
 
     if b_rotate.active {
       b_rotate.timer.tick(time.delta());
-      transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 360.0f32.to_radians() * time.delta_seconds()));
+      rotating.scramble_timer.tick(time.delta());
+      transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
 
-      if b_rotate.timer.just_finished() {
+      if b_rotate.timer.just_finished() || rotating.scramble_timer.just_finished() {
         b_rotate.active = false;
-        rotating.active = false;
+        b_rotate.direction = 0.0;
+        b_rotate.axis = Vec3::ZERO;
+        close = true;
+
+        transform.translation = b_rotate.target.translation;
+        transform.rotation = b_rotate.target.rotation;
       } 
     }
+  }
+  if close { 
+    rotating.active = false; 
   }
     
 }
 
 fn reset_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &CubeSettings, &DefaultPosition)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut BlockRotate)>,
+  mut rotating: ResMut<CubeRotate>,
 ) {
 
-  for (mut transform, _cube, binds, default) in &mut cubes {
+  for (mut transform, _cube, binds, default, mut b_rotate) in &mut cubes {
 
     if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+      rotating.active = false;
       transform.translation = default.0;
       transform.rotation = Quat::from_euler(EulerRot::XYZ, 0.0, 0.0, 0.0);
+      b_rotate.active = false;
     }
 
   }
   
+}
+
+fn scramble_cube(
+  kbd: Res<ButtonInput<KeyCode>>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
+  mut rotating: ResMut<CubeRotate>,
+) {
+
+  for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
+
+    if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+      rotating.active = true;
+      rotating.speed = 1080.0;
+      rotating.scramble_timer.reset();
+
+      // algorithm to randomly choose x/y/z axis and direction +/- and rotate 90° multiple times
+      
+    }
+  }
 }

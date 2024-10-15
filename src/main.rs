@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use bevy::prelude::*;
 // use bevy::time::Stopwatch;
-use setup::cube::CubeModels;
-use setup::camera::CameraComponent;
+use component::cube::CubeModels;
+use component::camera::CameraComponent;
 
-pub mod setup;
+pub mod component;
 
 fn main() {
   App::new()
