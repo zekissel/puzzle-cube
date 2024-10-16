@@ -1,10 +1,14 @@
 use bevy::prelude::*;
+use bevy_prng::ChaCha8Rng;
+use bevy_rand::prelude::GlobalEntropy;
+use rand_core::{RngCore, SeedableRng};
 
 #[derive(Resource)]
 struct CubeRotate {
   active: bool,
   speed: f32,
-  scramble_timer: Timer,
+  //scramble_timer: Timer,
+  scramble: i32,
 }
 
 pub struct CubeModels;
@@ -16,14 +20,18 @@ impl Plugin for CubeModels {
       adjust_cube.run_if(any_with_component::<Block>),
       reset_cube.run_if(any_with_component::<Block>),
       cube_control.run_if(any_with_component::<Block>),
+      scramble_cube.run_if(any_with_component::<Block>),
       rotate_cube.run_if(any_with_component::<Block>),
+      rotate_scramble.run_if(any_with_component::<Block>),
       
     ));
     app.insert_resource(CubeRotate { 
       active: false, 
       speed: 420.0f32,
-      scramble_timer: Timer::from_seconds(4.0, TimerMode::Once) 
+      //scramble_timer: Timer::from_seconds(0.05, TimerMode::Repeating),
+      scramble: 0,
     });
+    app.insert_resource(GlobalEntropy::new(ChaCha8Rng::seed_from_u64(0)));
   }
 }
 
@@ -36,26 +44,37 @@ struct Target {
   rotation: Quat,
 }
 
+/* MARK: BLOCK ROTATION 
+
+
+
+  MARK: COMPONENT 
+*/
 #[derive(Component)]
 struct BlockRotate {
   axis: Vec3,
+  positive: bool,
   direction: f32,
   active: bool,
   target: Target,
   timer: Timer,
+  scramble_timer: Timer,
 }
 
 impl Default for BlockRotate {
   fn default() -> Self {
     BlockRotate { 
       axis: Vec3::X,
+      positive: true,
       direction: 1.0,
       active: false,
       target: Target { translation: Vec3::ZERO, rotation: Quat::IDENTITY },
       timer: Timer::from_seconds(0.18, TimerMode::Repeating),
+      scramble_timer: Timer::from_seconds(0.08, TimerMode::Repeating),
     }
   }
 }
+
 
 #[derive(Component, Default)]
 struct DefaultPosition(Vec3);
@@ -104,9 +123,11 @@ struct BlockBundle {
   rotate: BlockRotate,
 }
 
+
 enum UnpackBlocks { Center, Edge, Corner }
 
-/* MARK: SYSTEMS FOR CUBE SETUP and INITIALIZATION */
+/* MARK: SYSTEMS FOR CUBE SETUP and INITIALIZATION 
+*/
 
 fn unpack_coords(name: &str, area: UnpackBlocks) -> (f32, f32, f32) {
 
@@ -233,7 +254,8 @@ fn setup_corners(
 
 
 
-/* MARK: SYSTEMS FOR CONTROLLING CUBE */
+/* MARK: SYSTEMS FOR CONTROLLING CUBE 
+*/
 
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
@@ -280,8 +302,10 @@ fn cube_control(
 
     if f_cc || f_cw || t_cc || t_cw { rotating.active = true; b_rotate.timer.reset(); } else { return }
 
+    let limit = if b_rotate.positive { 2.20 } else { -2.20 };
+
     if f_cc || f_cw {
-      if transform.translation.x == 2.20 {
+      if transform.translation.x == limit {
         b_rotate.axis = Vec3::X;
         b_rotate.active = true;
         if f_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
@@ -291,7 +315,7 @@ fn cube_control(
       }
     }
     else if t_cc || t_cw {
-      if transform.translation.y == 2.20 {
+      if transform.translation.y == limit {
         b_rotate.axis = Vec3::Y;
         b_rotate.active = true;
         if t_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
@@ -324,17 +348,18 @@ fn rotate_cube(
   mut rotating: ResMut<CubeRotate>,
 ) {
 
-  if !rotating.active { return }
+  if !rotating.active || rotating.scramble > 0 { return }
   let mut close = false;
 
   for (mut transform, _cube, mut b_rotate) in &mut cubes {
 
     if b_rotate.active {
+
       b_rotate.timer.tick(time.delta());
-      rotating.scramble_timer.tick(time.delta());
+
       transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
 
-      if b_rotate.timer.just_finished() || rotating.scramble_timer.just_finished() {
+      if b_rotate.timer.just_finished() {
         b_rotate.active = false;
         b_rotate.direction = 0.0;
         b_rotate.axis = Vec3::ZERO;
@@ -342,12 +367,11 @@ fn rotate_cube(
 
         transform.translation = b_rotate.target.translation;
         transform.rotation = b_rotate.target.rotation;
-      } 
+      }
     }
   }
-  if close { 
-    rotating.active = false; 
-  }
+
+  if close { rotating.active = false; }
     
 }
 
@@ -361,8 +385,9 @@ fn reset_cube(
 
     if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
       rotating.active = false;
+      rotating.speed = 420.0;
       transform.translation = default.0;
-      transform.rotation = Quat::from_euler(EulerRot::XYZ, 0.0, 0.0, 0.0);
+      transform.rotation = Quat::IDENTITY;
       b_rotate.active = false;
     }
 
@@ -372,19 +397,99 @@ fn reset_cube(
 
 fn scramble_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
+  mut cubes: Query<(&Block, &ControlBinds)>,
   mut rotating: ResMut<CubeRotate>,
 ) {
 
-  for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
+  for (_cube, binds) in &mut cubes {
 
     if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      rotating.active = true;
+      rotating.active = false;
+      rotating.scramble = 150;
       rotating.speed = 1080.0;
-      rotating.scramble_timer.reset();
-
-      // algorithm to randomly choose x/y/z axis and direction +/- and rotate 90° multiple times
-      
     }
   }
+}
+
+fn rotate_scramble(
+  mut cubes: Query<(&mut Transform, &Block, &mut BlockRotate)>,
+  time: Res<Time>,
+  mut rotating: ResMut<CubeRotate>,
+  mut rng: ResMut<GlobalEntropy<ChaCha8Rng>>,
+) {
+  if rotating.scramble == 0 { return }
+
+  if !rotating.active {
+
+    let (axis, positive, direction) = randomize_vars(&mut rng);
+    let limit = if positive { 2.20 } else { -2.20 };
+
+    for (mut transform, _cube, mut b_rotate) in &mut cubes {
+
+      let comparison = match axis {
+        Vec3::X => transform.translation.x,
+        Vec3::Y => transform.translation.y,
+        _ => transform.translation.z
+      };
+      if comparison == limit {
+        b_rotate.axis = axis;
+        b_rotate.active = true;
+        b_rotate.direction = direction;
+        
+        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
+        b_rotate.target = Target { translation: tl, rotation: rt };
+        b_rotate.timer.reset();
+      }
+    }
+
+    rotating.active = true;
+    rotating.scramble -= 1;
+
+  } 
+  
+  if rotating.active {
+    let mut close = false;
+    let mut stop_rotate = false;
+
+    for (mut transform, _cube, mut b_rotate) in &mut cubes {
+
+      if b_rotate.active {
+
+        b_rotate.scramble_timer.tick(time.delta());
+        transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
+  
+        if b_rotate.scramble_timer.just_finished() {
+          stop_rotate = true;
+  
+          transform.translation = b_rotate.target.translation;
+          transform.rotation = b_rotate.target.rotation;
+      
+          b_rotate.active = false;
+          b_rotate.direction = 0.0;
+          b_rotate.axis = Vec3::ZERO;
+  
+          if rotating.scramble == 0 {
+            close = true;
+          }
+        }
+      }
+    }
+
+    if stop_rotate { rotating.active = false; }
+    if close { rotating.active = false; rotating.speed = 420.0; }
+  }
+    
+}
+
+fn randomize_vars(rng: &mut ResMut<GlobalEntropy<ChaCha8Rng>>) -> (Vec3, bool, f32) {
+
+  let positive = rng.next_u32() % 2 == 0;
+  let axis = match rng.next_u32() % 3 {
+    0 => Vec3::X, 
+    1 => Vec3::Y, 
+    _ => Vec3::Z,
+  };
+  let direction = if rng.next_u32() % 2 == 0 { 1.0 } else { -1.0 };
+
+  (axis, positive, direction)
 }
