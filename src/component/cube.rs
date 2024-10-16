@@ -7,7 +7,8 @@ use rand_core::{RngCore, SeedableRng};
 struct CubeRotate {
   active: bool,
   speed: f32,
-  //scramble_timer: Timer,
+  turn_timer: Timer,
+  rotation_timer: Timer,
   scramble: i32,
 }
 
@@ -28,7 +29,8 @@ impl Plugin for CubeModels {
     app.insert_resource(CubeRotate { 
       active: false, 
       speed: 420.0f32,
-      //scramble_timer: Timer::from_seconds(0.05, TimerMode::Repeating),
+      turn_timer: Timer::from_seconds(0.18, TimerMode::Repeating),
+      rotation_timer: Timer::from_seconds(0.075, TimerMode::Repeating),
       scramble: 0,
     });
     app.insert_resource(GlobalEntropy::new(ChaCha8Rng::seed_from_u64(0)));
@@ -58,7 +60,6 @@ struct BlockRotate {
   active: bool,
   target: Target,
   timer: Timer,
-  scramble_timer: Timer,
 }
 
 impl Default for BlockRotate {
@@ -70,7 +71,6 @@ impl Default for BlockRotate {
       active: false,
       target: Target { translation: Vec3::ZERO, rotation: Quat::IDENTITY },
       timer: Timer::from_seconds(0.18, TimerMode::Repeating),
-      scramble_timer: Timer::from_seconds(0.08, TimerMode::Repeating),
     }
   }
 }
@@ -342,6 +342,8 @@ fn fetch_target(transform: &mut Transform, b_rotate: &mut BlockRotate) -> (Vec3,
   ((tl * 10.0).round() / 10.0, rt)
 }
 
+/* MARK: ROTATE
+ */
 fn rotate_cube(
   mut cubes: Query<(&mut Transform, &Block, &mut BlockRotate)>,
   time: Res<Time>,
@@ -349,6 +351,8 @@ fn rotate_cube(
 ) {
 
   if !rotating.active || rotating.scramble > 0 { return }
+
+  rotating.speed = 420.0;
   let mut close = false;
 
   for (mut transform, _cube, mut b_rotate) in &mut cubes {
@@ -405,7 +409,7 @@ fn scramble_cube(
 
     if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
       rotating.active = false;
-      rotating.scramble = 150;
+      rotating.scramble = 100;
       rotating.speed = 1080.0;
     }
   }
@@ -438,12 +442,13 @@ fn rotate_scramble(
         
         let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
         b_rotate.target = Target { translation: tl, rotation: rt };
-        b_rotate.timer.reset();
+        
       }
     }
 
     rotating.active = true;
     rotating.scramble -= 1;
+    rotating.rotation_timer.reset();
 
   } 
   
@@ -451,14 +456,14 @@ fn rotate_scramble(
     let mut close = false;
     let mut stop_rotate = false;
 
+    rotating.rotation_timer.tick(time.delta());
+
     for (mut transform, _cube, mut b_rotate) in &mut cubes {
 
       if b_rotate.active {
-
-        b_rotate.scramble_timer.tick(time.delta());
         transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
   
-        if b_rotate.scramble_timer.just_finished() {
+        if rotating.rotation_timer.just_finished() {
           stop_rotate = true;
   
           transform.translation = b_rotate.target.translation;
