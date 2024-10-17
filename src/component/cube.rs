@@ -3,23 +3,12 @@ use bevy_prng::ChaCha8Rng;
 use bevy_rand::prelude::GlobalEntropy;
 use rand_core::{RngCore, SeedableRng};
 
-#[derive(Resource)]
-struct AggregateMovement {
-  active: bool,
-  speed: f32,
-
-  axis: Vec3,
-  positive: bool,
-  direction: f32,
-  turn_timer: Timer,
-
-  rotation_timer: Timer,
-  scramble: i32,
-}
-
+// °s per second
 const TURN_SPEED: f32 = 420.0;
 const SCRAMBLE_SPEED: f32 = 1080.0;
 
+/* MARK: CUBE PLUGIN
+*/
 pub struct CubeModels;
 
 impl Plugin for CubeModels {
@@ -46,6 +35,24 @@ impl Plugin for CubeModels {
     });
     app.insert_resource(GlobalEntropy::new(ChaCha8Rng::seed_from_u64(0)));
   }
+}
+
+/* MARK: MOVEMENT <RES>
+*/
+#[derive(Resource)]
+struct AggregateMovement {
+  active: bool,
+  speed: f32,
+
+  // used on player-initiated turns
+  axis: Vec3,
+  positive: bool,
+  direction: f32,
+  turn_timer: Timer,
+
+  // used with scramble turns
+  rotation_timer: Timer,
+  scramble: i32,
 }
 
 #[derive(Component, Default)]
@@ -199,10 +206,13 @@ fn setup_cube(
 }
 
 
+// MARK: UPDATE SYSTEMS:
 
-/* MARK: UPDATE SYSTEMS
+
+
+
+/* MARK: ROTATE CUBE
 */
-
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
@@ -237,7 +247,8 @@ fn adjust_cube(
   agg_mov.turn_timer.reset()
 }
 
-
+/* MARK: REGULAR CTRL
+ */
 fn cube_control(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
@@ -288,6 +299,8 @@ fn cube_control(
   agg_mov.positive = true;
 }
 
+/* MARK: SCRAMBLE CTRL
+ */
 fn scramble_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&Block, &ControlBinds)>,
@@ -304,20 +317,31 @@ fn scramble_cube(
   }
 }
 
-/* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
-fn fetch_target(transform: &mut Transform, axis: Vec3, direction: f32) -> (Vec3, Quat) {
+/* MARK: RESET CTRL
+ */
+fn reset_cube(
+  kbd: Res<ButtonInput<KeyCode>>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
+  mut agg_mov: ResMut<AggregateMovement>,
+) {
 
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians()));
+  for (mut transform, _cube, binds, default, mut b_rotate) in &mut cubes {
 
-  let tl = transform.translation;
-  let rt = transform.rotation;
-  // return to same position as beginning of frame
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians() * -1.0));
+    if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+      agg_mov.active = false;
+      agg_mov.speed = TURN_SPEED;
+      transform.translation = default.0;
+      transform.rotation = Quat::IDENTITY;
+      b_rotate.active = false;
+    }
 
-  ((tl * 10.0).round() / 10.0, rt)
+  }
+  
 }
 
-/* MARK: ROTATE
+
+
+/* MARK: REGULAR TURN
  */
 fn rotate_cube(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
@@ -352,29 +376,9 @@ fn rotate_cube(
     
 }
 
-/* MARK: RESET
- */
-fn reset_cube(
-  kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
-  mut agg_mov: ResMut<AggregateMovement>,
-) {
-
-  for (mut transform, _cube, binds, default, mut b_rotate) in &mut cubes {
-
-    if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      agg_mov.active = false;
-      agg_mov.speed = TURN_SPEED;
-      transform.translation = default.0;
-      transform.rotation = Quat::IDENTITY;
-      b_rotate.active = false;
-    }
-
-  }
-  
-}
 
 
+// MARK: SCRAMBLE TURN
 
 fn rotate_scramble(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
@@ -449,6 +453,7 @@ fn rotate_scramble(
     
 }
 
+// MARK: UTIL
 fn randomize_vars(rng: &mut ResMut<GlobalEntropy<ChaCha8Rng>>) -> (Vec3, bool, f32) {
 
   let positive = rng.next_u32() % 2 == 0;
@@ -460,4 +465,17 @@ fn randomize_vars(rng: &mut ResMut<GlobalEntropy<ChaCha8Rng>>) -> (Vec3, bool, f
   let direction = if rng.next_u32() % 2 == 0 { 1.0 } else { -1.0 };
 
   (axis, positive, direction)
+}
+
+/* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
+fn fetch_target(transform: &mut Transform, axis: Vec3, direction: f32) -> (Vec3, Quat) {
+
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians()));
+
+  let tl = transform.translation;
+  let rt = transform.rotation;
+  // return to same position as beginning of frame
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians() * -1.0));
+
+  ((tl * 10.0).round() / 10.0, rt)
 }
