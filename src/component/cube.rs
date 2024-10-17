@@ -7,16 +7,24 @@ use rand_core::{RngCore, SeedableRng};
 struct CubeRotate {
   active: bool,
   speed: f32,
+
+  axis: Vec3,
+  positive: bool,
+  direction: f32,
   turn_timer: Timer,
+
   rotation_timer: Timer,
   scramble: i32,
 }
+
+const TURN_SPEED: f32 = 420.0;
+const SCRAMBLE_SPEED: f32 = 1080.0;
 
 pub struct CubeModels;
 
 impl Plugin for CubeModels {
   fn build(&self, app: &mut App) {
-    app.add_systems(Startup, (setup_core, setup_edges, setup_corners));
+    app.add_systems(Startup, setup_cube);
     app.add_systems(Update, (
       adjust_cube.run_if(any_with_component::<Block>),
       reset_cube.run_if(any_with_component::<Block>),
@@ -28,7 +36,10 @@ impl Plugin for CubeModels {
     ));
     app.insert_resource(CubeRotate { 
       active: false, 
-      speed: 420.0f32,
+      speed: TURN_SPEED,
+      axis: Vec3::ZERO,
+      positive: true,
+      direction: 1.0,
       turn_timer: Timer::from_seconds(0.18, TimerMode::Repeating),
       rotation_timer: Timer::from_seconds(0.075, TimerMode::Repeating),
       scramble: 0,
@@ -53,7 +64,7 @@ struct Target {
   MARK: COMPONENT 
 */
 #[derive(Component)]
-struct BlockRotate {
+struct MovementNode {
   axis: Vec3,
   positive: bool,
   direction: f32,
@@ -62,9 +73,9 @@ struct BlockRotate {
   timer: Timer,
 }
 
-impl Default for BlockRotate {
+impl Default for MovementNode {
   fn default() -> Self {
-    BlockRotate { 
+    MovementNode { 
       axis: Vec3::X,
       positive: true,
       direction: 1.0,
@@ -114,128 +125,76 @@ impl Default for ControlBinds {
   }
 }
 
+/* MARK: BLOCK BUNDLE
+ */
 #[derive(Bundle, Default)]
 struct BlockBundle {
   block: Block,
   scene_bundle: SceneBundle,
   settings: ControlBinds,
   default_position: DefaultPosition,
-  rotate: BlockRotate,
+  movement_node: MovementNode,
 }
 
 
+
 enum UnpackBlocks { Center, Edge, Corner }
-
-/* MARK: SYSTEMS FOR CUBE SETUP and INITIALIZATION 
+/* MARK: CUBE SETUP
 */
-
 fn unpack_coords(name: &str, area: UnpackBlocks) -> (f32, f32, f32) {
 
   let mut index = 0;
 
   let x_trans = match name.chars().nth(index).unwrap() {
-    'w' => 2.2,
-    'y' => -2.2,
-    _ => 0.0,
+    'w' => 2.2, 'y' => -2.2, _ => 0.0,
   };
 
   index = match area {
-    UnpackBlocks::Center => 0,
     UnpackBlocks::Edge => { if x_trans != 0.0 { index + 1 } else { index } },
-    UnpackBlocks::Corner => 1,
+    UnpackBlocks::Corner => 1, _ => 0,
   };
 
   let y_trans = match name.chars().nth(index).unwrap() {
-    'r' => 2.2,
-    'o' => -2.2,
-    _ => 0.0,
+    'r' => 2.2, 'o' => -2.2, _ => 0.0,
   };
 
   index = match area {
-    UnpackBlocks::Center => 0,
     UnpackBlocks::Edge => { if y_trans != 0.0 { index + 1 } else { index } },
-    UnpackBlocks::Corner => 2,
+    UnpackBlocks::Corner => 2, _ => 0,
   };
 
   let z_trans = match name.chars().nth(index).unwrap_or('x') {
-    'b' => 2.2,
-    'g' => -2.2,
-    _ => 0.0,
+    'b' => 2.2, 'g' => -2.2, _ => 0.0,
   };
 
   (x_trans, y_trans, z_trans)
 }
 
-
-fn setup_core(
+fn setup_cube(
   mut commands: Commands,
   assets: Res<AssetServer>,
 ) {
   let cores = vec!["r", "b", "w", "o", "g", "y"];
-
-  for core in cores {
-
-    let path = "center/".to_owned() + core + ".glb#Scene0";
-    let part_handle = assets.load(path);
-
-    let (x_trans, y_trans, z_trans) = unpack_coords(core, UnpackBlocks::Center);
-
-    commands.spawn(BlockBundle { 
-      scene_bundle: SceneBundle {
-        scene: part_handle,
-        transform: Transform::from_xyz(x_trans, y_trans, z_trans),
-        visibility: Visibility::Visible,
-        ..Default::default()
-      },
-      default_position: DefaultPosition(Vec3::from_slice(&[x_trans, y_trans, z_trans])),
-      ..Default::default()
-    });
-  }
-
-}
-
-
-fn setup_edges(
-  mut commands: Commands,
-  assets: Res<AssetServer>,
-) {
-
   let edges = vec!["rb", "yb", "ob", "wb", "rg", "yg", "og", "wg", "yr", "yo", "wr", "wo"];
-
-  for edge in edges {
-
-    let path = "edge/".to_owned() + edge + ".glb#Scene0";
-    let part_handle = assets.load(path);
-
-    let (x_trans, y_trans, z_trans) = unpack_coords(edge, UnpackBlocks::Edge);
-
-    commands.spawn(BlockBundle { 
-      scene_bundle: SceneBundle {
-        scene: part_handle,
-        transform: Transform::from_xyz(x_trans, y_trans, z_trans),
-        visibility: Visibility::Visible,
-        ..Default::default()
-      },
-      default_position: DefaultPosition(Vec3::from_slice(&[x_trans, y_trans, z_trans])),
-      ..Default::default()
-    });
-  }
-
-}
-
-fn setup_corners(
-  mut commands: Commands,
-  assets: Res<AssetServer>,
-) {
-
   let corners = vec!["wrb", "wrg", "wob", "wog", "yrb", "yrg", "yob", "yog"];
 
-  for corner in corners {
+  let all = corners.iter().chain(edges.iter().chain(cores.iter())).collect::<Vec<_>>();
 
-    let path = "corner/".to_owned() + corner + ".glb#Scene0";
+  for block in all {
+
+    let root = match block.len() {
+      2 => "edge",
+      3 => "corner",
+      _ => "center",
+    };
+    let path = root.to_owned() + "/" + block + ".glb#Scene0";
     let part_handle = assets.load(path);
 
-    let (x_trans, y_trans, z_trans) = unpack_coords(corner, UnpackBlocks::Corner);
+    let (x_trans, y_trans, z_trans) = unpack_coords(&block, match root {
+      "edge" => UnpackBlocks::Edge,
+      "corner" => UnpackBlocks::Corner,
+      _ => UnpackBlocks::Center,
+    });
 
     commands.spawn(BlockBundle { 
       scene_bundle: SceneBundle {
@@ -248,18 +207,17 @@ fn setup_corners(
       ..Default::default()
     });
   }
-  
+
 }
 
 
 
-
-/* MARK: SYSTEMS FOR CONTROLLING CUBE 
+/* MARK: UPDATE SYSTEMS
 */
 
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
   mut rotating: ResMut<CubeRotate>,
 ) {
 
@@ -287,7 +245,7 @@ fn adjust_cube(
 
 fn cube_control(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
   mut rotating: ResMut<CubeRotate>,
 ) {
 
@@ -329,8 +287,24 @@ fn cube_control(
   }
 }
 
+fn scramble_cube(
+  kbd: Res<ButtonInput<KeyCode>>,
+  mut cubes: Query<(&Block, &ControlBinds)>,
+  mut rotating: ResMut<CubeRotate>,
+) {
+
+  for (_cube, binds) in &mut cubes {
+
+    if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+      rotating.active = false;
+      rotating.scramble = 100;
+      rotating.speed = SCRAMBLE_SPEED;
+    }
+  }
+}
+
 /* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
-fn fetch_target(transform: &mut Transform, b_rotate: &mut BlockRotate) -> (Vec3, Quat) {
+fn fetch_target(transform: &mut Transform, b_rotate: &mut MovementNode) -> (Vec3, Quat) {
 
   transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 90.0f32.to_radians()));
 
@@ -345,7 +319,7 @@ fn fetch_target(transform: &mut Transform, b_rotate: &mut BlockRotate) -> (Vec3,
 /* MARK: ROTATE
  */
 fn rotate_cube(
-  mut cubes: Query<(&mut Transform, &Block, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   time: Res<Time>,
   mut rotating: ResMut<CubeRotate>,
 ) {
@@ -379,9 +353,11 @@ fn rotate_cube(
     
 }
 
+/* MARK: RESET
+ */
 fn reset_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
   mut rotating: ResMut<CubeRotate>,
 ) {
 
@@ -399,24 +375,10 @@ fn reset_cube(
   
 }
 
-fn scramble_cube(
-  kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&Block, &ControlBinds)>,
-  mut rotating: ResMut<CubeRotate>,
-) {
 
-  for (_cube, binds) in &mut cubes {
-
-    if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      rotating.active = false;
-      rotating.scramble = 100;
-      rotating.speed = 1080.0;
-    }
-  }
-}
 
 fn rotate_scramble(
-  mut cubes: Query<(&mut Transform, &Block, &mut BlockRotate)>,
+  mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   time: Res<Time>,
   mut rotating: ResMut<CubeRotate>,
   mut rng: ResMut<GlobalEntropy<ChaCha8Rng>>,
