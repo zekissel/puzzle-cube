@@ -4,7 +4,7 @@ use bevy_rand::prelude::GlobalEntropy;
 use rand_core::{RngCore, SeedableRng};
 
 #[derive(Resource)]
-struct CubeRotate {
+struct AggregateMovement {
   active: bool,
   speed: f32,
 
@@ -34,7 +34,7 @@ impl Plugin for CubeModels {
       rotate_scramble.run_if(any_with_component::<Block>),
       
     ));
-    app.insert_resource(CubeRotate { 
+    app.insert_resource(AggregateMovement { 
       active: false, 
       speed: TURN_SPEED,
       axis: Vec3::ZERO,
@@ -57,31 +57,19 @@ struct Target {
   rotation: Quat,
 }
 
-/* MARK: BLOCK ROTATION 
-
-
-
-  MARK: COMPONENT 
+/* MARK: ROTATION NODE
 */
 #[derive(Component)]
 struct MovementNode {
-  axis: Vec3,
-  positive: bool,
-  direction: f32,
   active: bool,
   target: Target,
-  timer: Timer,
 }
 
 impl Default for MovementNode {
   fn default() -> Self {
-    MovementNode { 
-      axis: Vec3::X,
-      positive: true,
-      direction: 1.0,
+    MovementNode {
       active: false,
       target: Target { translation: Vec3::ZERO, rotation: Quat::IDENTITY },
-      timer: Timer::from_seconds(0.18, TimerMode::Repeating),
     }
   }
 }
@@ -218,10 +206,12 @@ fn setup_cube(
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
 ) {
 
-  if rotating.active { return }
+  if agg_mov.active { return }
+  let mut axis = Vec3::X;
+  let mut direction = 1.0;
 
   for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
 
@@ -230,88 +220,99 @@ fn adjust_cube(
       kbd.just_pressed(binds.rotate_y_pos.unwrap()), kbd.just_pressed(binds.rotate_y_neg.unwrap())
     );
 
-    if c_cc || c_cw || c_up || c_do { rotating.active = true; b_rotate.timer.reset(); b_rotate.active = true; } else { return }
+    if c_cc || c_cw || c_up || c_do { agg_mov.active = true; b_rotate.active = true; } else { return }
 
-    if c_cc || c_cw { b_rotate.axis = Vec3::Y; }
-    else if c_up || c_do { b_rotate.axis = Vec3::Z; };
-    if c_cc || c_up { b_rotate.direction = 1.0 } else { b_rotate.direction = -1.0 };
+    if c_cc || c_cw { axis = Vec3::Y; }
+    else if c_up || c_do { axis = Vec3::Z; };
+    if c_cc || c_up { direction = 1.0 } else { direction = -1.0 };
 
-    let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
+    let (tl, rt) = fetch_target(&mut transform, axis, direction);
     b_rotate.target = Target { translation: tl, rotation: rt };
-    
   }
+
+  agg_mov.positive = true;
+  agg_mov.axis = axis;
+  agg_mov.direction = direction;
+
+  agg_mov.turn_timer.reset()
 }
 
 
 fn cube_control(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
 ) {
 
-  if rotating.active { return }
+  if agg_mov.active { return }
 
-  for (mut transform, _cube, binds, mut b_rotate) in &mut cubes {
+  let mut axis = Vec3::X;
+  let mut direction = 1.0;
+
+  for (mut transform, _cube, binds, mut move_node) in &mut cubes {
 
     let (f_cc, f_cw, t_cc, t_cw) = (
       kbd.just_pressed(binds.front_cc.unwrap()), kbd.just_pressed(binds.front_cw.unwrap()), 
       kbd.just_pressed(binds.top_cc.unwrap()), kbd.just_pressed(binds.top_cw.unwrap())
     );
 
-    if f_cc || f_cw || t_cc || t_cw { rotating.active = true; b_rotate.timer.reset(); } else { return }
+    if f_cc || f_cw || t_cc || t_cw { agg_mov.active = true; agg_mov.turn_timer.reset(); } else { return }
 
-    let limit = if b_rotate.positive { 2.20 } else { -2.20 };
+    let limit = if agg_mov.positive { 2.20 } else { -2.20 };
 
     if f_cc || f_cw {
       if transform.translation.x == limit {
-        b_rotate.axis = Vec3::X;
-        b_rotate.active = true;
-        if f_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
+        axis = Vec3::X;
+        move_node.active = true;
+        if f_cw { direction = -1.0 } else { direction = 1.0 };
         
-        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
-        b_rotate.target = Target { translation: tl, rotation: rt };
+        let (tl, rt) = fetch_target(&mut transform, axis, direction);
+        move_node.target = Target { translation: tl, rotation: rt };
       }
     }
     else if t_cc || t_cw {
       if transform.translation.y == limit {
-        b_rotate.axis = Vec3::Y;
-        b_rotate.active = true;
-        if t_cw { b_rotate.direction = -1.0 } else { b_rotate.direction = 1.0 };
+        axis = Vec3::Y;
+        move_node.active = true;
+        if t_cw { direction = -1.0 } else { direction = 1.0 };
         
-        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
-
-        b_rotate.target = Target { translation: tl, rotation: rt };
+        let (tl, rt) = fetch_target(&mut transform, axis, direction);
+        move_node.target = Target { translation: tl, rotation: rt };
       }
     }
     
   }
+
+  agg_mov.axis = axis;
+  agg_mov.direction = direction;
+  agg_mov.positive = true;
 }
 
 fn scramble_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&Block, &ControlBinds)>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
 ) {
 
   for (_cube, binds) in &mut cubes {
 
     if binds.scramble_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      rotating.active = false;
-      rotating.scramble = 100;
-      rotating.speed = SCRAMBLE_SPEED;
+      agg_mov.active = false;
+      agg_mov.scramble = 100;
+      agg_mov.speed = SCRAMBLE_SPEED;
     }
   }
 }
 
 /* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
-fn fetch_target(transform: &mut Transform, b_rotate: &mut MovementNode) -> (Vec3, Quat) {
+fn fetch_target(transform: &mut Transform, axis: Vec3, direction: f32) -> (Vec3, Quat) {
 
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 90.0f32.to_radians()));
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians()));
 
   let tl = transform.translation;
   let rt = transform.rotation;
   // return to same position as beginning of frame
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * 90.0f32.to_radians() * -1.0));
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians() * -1.0));
 
   ((tl * 10.0).round() / 10.0, rt)
 }
@@ -321,26 +322,24 @@ fn fetch_target(transform: &mut Transform, b_rotate: &mut MovementNode) -> (Vec3
 fn rotate_cube(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   time: Res<Time>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
 ) {
 
-  if !rotating.active || rotating.scramble > 0 { return }
+  if !agg_mov.active || agg_mov.scramble > 0 { return }
 
-  rotating.speed = 420.0;
+  agg_mov.speed = 420.0;
   let mut close = false;
+
+  agg_mov.turn_timer.tick(time.delta());
 
   for (mut transform, _cube, mut b_rotate) in &mut cubes {
 
     if b_rotate.active {
 
-      b_rotate.timer.tick(time.delta());
+      transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(agg_mov.axis, agg_mov.direction * agg_mov.speed.to_radians() * time.delta_seconds()));
 
-      transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
-
-      if b_rotate.timer.just_finished() {
+      if agg_mov.turn_timer.just_finished() {
         b_rotate.active = false;
-        b_rotate.direction = 0.0;
-        b_rotate.axis = Vec3::ZERO;
         close = true;
 
         transform.translation = b_rotate.target.translation;
@@ -349,7 +348,7 @@ fn rotate_cube(
     }
   }
 
-  if close { rotating.active = false; }
+  if close { agg_mov.active = false; }
     
 }
 
@@ -358,14 +357,14 @@ fn rotate_cube(
 fn reset_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
 ) {
 
   for (mut transform, _cube, binds, default, mut b_rotate) in &mut cubes {
 
     if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      rotating.active = false;
-      rotating.speed = 420.0;
+      agg_mov.active = false;
+      agg_mov.speed = TURN_SPEED;
       transform.translation = default.0;
       transform.rotation = Quat::IDENTITY;
       b_rotate.active = false;
@@ -380,70 +379,72 @@ fn reset_cube(
 fn rotate_scramble(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   time: Res<Time>,
-  mut rotating: ResMut<CubeRotate>,
+  mut agg_mov: ResMut<AggregateMovement>,
   mut rng: ResMut<GlobalEntropy<ChaCha8Rng>>,
 ) {
-  if rotating.scramble == 0 { return }
+  if agg_mov.scramble == 0 { return }
 
-  if !rotating.active {
+  if !agg_mov.active {
 
     let (axis, positive, direction) = randomize_vars(&mut rng);
+    agg_mov.axis = axis;
+    agg_mov.direction = direction;
+    agg_mov.positive = positive;
+
     let limit = if positive { 2.20 } else { -2.20 };
 
-    for (mut transform, _cube, mut b_rotate) in &mut cubes {
+    for (mut transform, _cube, mut move_node) in &mut cubes {
 
       let comparison = match axis {
         Vec3::X => transform.translation.x,
         Vec3::Y => transform.translation.y,
-        _ => transform.translation.z
+        _       => transform.translation.z
       };
       if comparison == limit {
-        b_rotate.axis = axis;
-        b_rotate.active = true;
-        b_rotate.direction = direction;
-        
-        let (tl, rt) = fetch_target(&mut transform, &mut b_rotate);
-        b_rotate.target = Target { translation: tl, rotation: rt };
-        
+        let (tl, rt) = fetch_target(&mut transform, axis, direction);
+        move_node.target = Target { translation: tl, rotation: rt };
+        move_node.active = true;
       }
     }
 
-    rotating.active = true;
-    rotating.scramble -= 1;
-    rotating.rotation_timer.reset();
-
+    agg_mov.active = true;
+    agg_mov.scramble -= 1;
+    agg_mov.rotation_timer.reset();
   } 
   
-  if rotating.active {
+  if agg_mov.active {
     let mut close = false;
     let mut stop_rotate = false;
 
-    rotating.rotation_timer.tick(time.delta());
+    agg_mov.rotation_timer.tick(time.delta());
 
     for (mut transform, _cube, mut b_rotate) in &mut cubes {
 
       if b_rotate.active {
-        transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(b_rotate.axis, b_rotate.direction * rotating.speed.to_radians() * time.delta_seconds()));
+        transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(agg_mov.axis, agg_mov.direction * agg_mov.speed.to_radians() * time.delta_seconds()));
   
-        if rotating.rotation_timer.just_finished() {
+        if agg_mov.rotation_timer.just_finished() {
           stop_rotate = true;
+          b_rotate.active = false;
   
           transform.translation = b_rotate.target.translation;
           transform.rotation = b_rotate.target.rotation;
       
-          b_rotate.active = false;
-          b_rotate.direction = 0.0;
-          b_rotate.axis = Vec3::ZERO;
-  
-          if rotating.scramble == 0 {
+          if agg_mov.scramble == 0 {
             close = true;
           }
         }
       }
     }
 
-    if stop_rotate { rotating.active = false; }
-    if close { rotating.active = false; rotating.speed = 420.0; }
+    if stop_rotate { agg_mov.active = false; }
+    if close { 
+      agg_mov.active = false; 
+      agg_mov.speed = TURN_SPEED; 
+      agg_mov.axis = Vec3::ZERO;
+      agg_mov.direction = 0.0;
+      agg_mov.positive = true;
+    }
   }
     
 }
