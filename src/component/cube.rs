@@ -376,9 +376,30 @@ fn rotate_cube(
     
 }
 
+/* MARK: RESET
+ */
+fn reset_cube(
+  kbd: Res<ButtonInput<KeyCode>>,
+  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
+  mut agg_mov: ResMut<AggregateMovement>,
+) {
+
+  for (mut transform, _cube, binds, default, mut b_rotate) in &mut cubes {
+
+    if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+      agg_mov.active = false;
+      agg_mov.speed = TURN_SPEED;
+      agg_mov.scramble = 0;
+      transform.translation = default.0;
+      transform.rotation = Quat::IDENTITY;
+      b_rotate.active = false;
+    }
+
+  }
+  
+}
 
 
-// MARK: SCRAMBLE TURN
 
 fn rotate_scramble(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
