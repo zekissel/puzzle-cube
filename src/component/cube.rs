@@ -365,6 +365,7 @@ fn reset_cube(
     if binds.reset_cube.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
       agg_mov.active = false;
       agg_mov.speed = TURN_SPEED;
+      agg_mov.scramble = 0;
       transform.translation = default.0;
       transform.rotation = Quat::IDENTITY;
       b_rotate.active = false;
