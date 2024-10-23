@@ -5,10 +5,12 @@ use rand_core::{RngCore, SeedableRng};
 
 // °s per second
 const TURN_SPEED: f32 = 560.0;
+const DOUBLE_SPEED: f32 = 960.0;
 const SCRAMBLE_SPEED: f32 = 1080.0;
 
 // delay in seconds between turns
 const TURN_DELAY: f32 = 0.14;
+const DOUBLE_DELAY: f32 = 0.18;
 const SCRAMBLE_DELAY: f32 = 0.075;
 
 /* MARK: CUBE PLUGIN
@@ -23,19 +25,24 @@ impl Plugin for CubeModels {
       reset_cube.run_if(any_with_component::<Block>),
       cube_control.run_if(any_with_component::<Block>),
       scramble_cube.run_if(any_with_component::<Block>),
-      rotate_cube.run_if(any_with_component::<Block>),
       rotate_scramble.run_if(any_with_component::<Block>),
-      
+      (toggle_double_turn.run_if(any_with_component::<Block>),
+      rotate_cube.run_if(any_with_component::<Block>)).chain(),
     ));
     app.insert_resource(AggregateMovement { 
       active: false, 
       speed: TURN_SPEED,
+      double: false,
       axis: Vec3::ZERO,
       positive: true,
       direction: 1.0,
       turn_timer: Timer::from_seconds(TURN_DELAY, TimerMode::Repeating),
+      double_timer: Timer::from_seconds(DOUBLE_DELAY, TimerMode::Repeating),
       scramble: 0,
       scramble_turn_timer: Timer::from_seconds(SCRAMBLE_DELAY, TimerMode::Repeating),
+    });
+    app.insert_resource(ControlSettings {
+      settings: ControlBinds::default(),
     });
     app.insert_resource(GlobalEntropy::new(ChaCha8Rng::seed_from_u64(0)));
   }
@@ -47,16 +54,70 @@ impl Plugin for CubeModels {
 struct AggregateMovement {
   active: bool,
   speed: f32,
+  double: bool,
 
   // used on player-initiated turns
   axis: Vec3,
   positive: bool, // positive quadrant or not
   direction: f32,
   turn_timer: Timer,
+  double_timer: Timer,
 
   // used with scramble turns
   scramble_turn_timer: Timer,
   scramble: i32,
+}
+
+#[derive(Resource)]
+struct ControlSettings {
+  settings: ControlBinds,
+}
+
+#[derive(Component)]
+struct ControlBinds {
+  button_rotate_x: Option<KeyCode>,
+  button_rotate_y: Option<KeyCode>,
+  button_rotate_z: Option<KeyCode>,
+
+  button_front_turn: Option<KeyCode>,
+  button_right_turn: Option<KeyCode>,
+  button_up_turn: Option<KeyCode>,
+  button_back_turn: Option<KeyCode>,
+  button_left_turn: Option<KeyCode>,
+  button_down_turn: Option<KeyCode>,
+
+  button_prime: Option<KeyCode>,
+  button_toggle_double: Option<KeyCode>,
+  button_wide: Option<KeyCode>,
+  button_middle: Option<KeyCode>,
+
+  button_reset: Option<KeyCode>,
+  button_scramble: Option<KeyCode>,
+}
+
+impl Default for ControlBinds {
+  fn default() -> Self {
+    ControlBinds {
+      button_rotate_x: Some(KeyCode::ArrowUp),
+      button_rotate_y: Some(KeyCode::ArrowRight),
+      button_rotate_z: Some(KeyCode::ArrowDown),
+
+      button_front_turn: Some(KeyCode::KeyW),
+      button_right_turn: Some(KeyCode::KeyD),
+      button_up_turn: Some(KeyCode::KeyE),
+      button_back_turn: Some(KeyCode::KeyS),
+      button_left_turn: Some(KeyCode::KeyA),
+      button_down_turn: Some(KeyCode::KeyQ),
+
+      button_prime: Some(KeyCode::ShiftLeft),
+      button_toggle_double: Some(KeyCode::CapsLock),
+      button_wide: Some(KeyCode::ControlLeft),
+      button_middle: Some(KeyCode::AltLeft),
+
+      button_reset: Some(KeyCode::KeyR),
+      button_scramble: Some(KeyCode::KeyT),
+    }
+  }
 }
 
 #[derive(Component, Default)]
@@ -67,7 +128,6 @@ struct Target {
   translation: Vec3,
   rotation: Quat,
 }
-
 /* MARK: ROTATION NODE
 
   TARGET marks where individual cubes should be after rotation timer ends (snap cubes into place)
@@ -91,50 +151,7 @@ impl Default for MovementNode {
 #[derive(Component, Default)]
 struct DefaultPosition(Vec3);
 
-#[derive(Component)]
-struct ControlBinds {
-  button_rotate_x: Option<KeyCode>,
-  button_rotate_y: Option<KeyCode>,
-  button_rotate_z: Option<KeyCode>,
 
-  button_front_turn: Option<KeyCode>,
-  button_right_turn: Option<KeyCode>,
-  button_up_turn: Option<KeyCode>,
-  button_back_turn: Option<KeyCode>,
-  button_left_turn: Option<KeyCode>,
-  button_down_turn: Option<KeyCode>,
-
-  button_prime: Option<KeyCode>,
-  button_wide: Option<KeyCode>,
-  button_alt: Option<KeyCode>,
-
-  button_reset: Option<KeyCode>,
-  button_scramble: Option<KeyCode>,
-}
-
-impl Default for ControlBinds {
-  fn default() -> Self {
-    ControlBinds {
-      button_rotate_x: Some(KeyCode::ArrowUp),
-      button_rotate_y: Some(KeyCode::ArrowRight),
-      button_rotate_z: Some(KeyCode::ArrowDown),
-
-      button_front_turn: Some(KeyCode::KeyW),
-      button_right_turn: Some(KeyCode::KeyD),
-      button_up_turn: Some(KeyCode::KeyE),
-      button_back_turn: Some(KeyCode::KeyS),
-      button_left_turn: Some(KeyCode::KeyA),
-      button_down_turn: Some(KeyCode::KeyQ),
-
-      button_prime: Some(KeyCode::ShiftLeft),
-      button_wide: Some(KeyCode::ControlLeft),
-      button_alt: Some(KeyCode::AltLeft),
-
-      button_reset: Some(KeyCode::KeyR),
-      button_scramble: Some(KeyCode::KeyT),
-    }
-  }
-}
 
 /* MARK: BLOCK BUNDLE
  */
@@ -142,11 +159,9 @@ impl Default for ControlBinds {
 struct BlockBundle {
   block: Block,
   scene_bundle: SceneBundle,
-  settings: ControlBinds,
   default_position: DefaultPosition,
   movement_node: MovementNode,
 }
-
 
 
 enum UnpackBlocks { Center, Edge, Corner }
@@ -233,82 +248,89 @@ fn setup_cube(
 */
 fn adjust_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
+  mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   mut agg_mov: ResMut<AggregateMovement>,
+  binds: Res<ControlSettings>,
 ) {
 
-  if agg_mov.active { return }
-  let mut axis = Vec3::X;
-  let mut direction = 1.0;
+  if agg_mov.active { return };
 
-  for (mut transform, _cube, binds, mut move_node) in &mut cubes {
+  let (button_x, button_y, button_z) = (
+    kbd.just_pressed(binds.settings.button_rotate_x.unwrap()), 
+    kbd.just_pressed(binds.settings.button_rotate_y.unwrap()), 
+    kbd.just_pressed(binds.settings.button_rotate_z.unwrap()),
+  );
 
-    let (button_x, button_y, button_z) = (
-      kbd.just_pressed(binds.button_rotate_x.unwrap()), 
-      kbd.just_pressed(binds.button_rotate_y.unwrap()), 
-      kbd.just_pressed(binds.button_rotate_z.unwrap()),
-    );
+  if button_x || button_y || button_z { agg_mov.active = true; } else { return }
 
-    if button_x || button_y || button_z { agg_mov.active = true; move_node.active = true; } else { return }
+  let button_prime = kbd.pressed(binds.settings.button_prime.unwrap());
 
-    let button_prime = kbd.pressed(binds.button_prime.unwrap());
-    if button_prime { direction = 1.0 } else { direction = -1.0 };
+  let direction = if button_prime { 1.0 } else { -1.0 };
+  let axis = match (button_x, button_y, button_z) {
+    (true, false, false) => Vec3::X,
+    (false, true, false) => Vec3::Y,
+    (false, false, true) => Vec3::Z,
+    _ => Vec3::X
+  };
+  
+  for (mut transform, _cube, mut move_node) in &mut cubes {
 
-    if button_x { axis = Vec3::X; } else if button_y { axis = Vec3::Y; }
-    else if button_z { axis = Vec3::Z; };
+    move_node.active = true;
 
-    let (tl, rt) = fetch_target(&mut transform, axis, direction);
+    let (tl, rt) = fetch_target(&mut transform, axis, direction, agg_mov.double);
     move_node.target = Target { translation: tl, rotation: rt };
   }
 
-  agg_mov.positive = true;
   agg_mov.axis = axis;
   agg_mov.direction = direction;
 
   agg_mov.turn_timer.reset();
+  agg_mov.double_timer.reset();
 }
 
 /* MARK: REGULAR CTRL
  */
 fn cube_control(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &mut MovementNode)>,
+  mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   mut agg_mov: ResMut<AggregateMovement>,
+  binds: Res<ControlSettings>,
 ) {
 
   if agg_mov.active { return }
 
-  let mut axis = Vec3::X;
-  let mut direction = 1.0;
-  let mut positive = true;
+  let (button_f, button_b, button_u, button_d, button_r, button_l) = (
+    kbd.just_pressed(binds.settings.button_front_turn.unwrap()), kbd.just_pressed(binds.settings.button_back_turn.unwrap()), 
+    kbd.just_pressed(binds.settings.button_up_turn.unwrap()), kbd.just_pressed(binds.settings.button_down_turn.unwrap()),
+    kbd.just_pressed(binds.settings.button_right_turn.unwrap()), kbd.just_pressed(binds.settings.button_left_turn.unwrap())
+  );
+  if button_f || button_b || button_u || button_d || button_r || button_l { agg_mov.active = true; } else { return }
 
-  for (mut transform, _cube, binds, mut move_node) in &mut cubes {
 
-    let (button_f, button_b, button_u, button_d, button_r, button_l) = (
-      kbd.just_pressed(binds.button_front_turn.unwrap()), kbd.just_pressed(binds.button_back_turn.unwrap()), 
-      kbd.just_pressed(binds.button_up_turn.unwrap()), kbd.just_pressed(binds.button_down_turn.unwrap()),
-      kbd.just_pressed(binds.button_right_turn.unwrap()), kbd.just_pressed(binds.button_left_turn.unwrap())
-    );
+  let axis: Vec3;
+  let mut direction: f32;
+  let positive: bool;
 
-    // initiate aggregate movement if any button is pressed
-    if button_f || button_b || button_u || button_d || button_r || button_l { agg_mov.active = true; agg_mov.turn_timer.reset(); } else { return }
-    if button_b || button_l || button_d { positive = false; } else { positive = true; }
+  if button_b || button_l || button_d { positive = false; } else { positive = true; }
+  let limit = if positive { 2.20 } else { -2.20 };
 
-    let button_prime = kbd.pressed(binds.button_prime.unwrap());
-    let button_wide = kbd.pressed(binds.button_wide.unwrap());
-    let button_alt = kbd.pressed(binds.button_alt.unwrap());
+  let button_prime = kbd.pressed(binds.settings.button_prime.unwrap());
+  if button_prime { direction = -1.0 } else { direction = 1.0 };
+  
+  let button_wide = kbd.pressed(binds.settings.button_wide.unwrap());
+  let button_middle = kbd.pressed(binds.settings.button_middle.unwrap());
+  if button_middle { 
+    direction *= -1.0; 
+    if button_b || button_f { direction *= -1.0; }
+  }
+  
+  // standardized speed cubing directions
+  if button_f || button_r || button_u { direction *= -1.0 };
+  
+  if button_f || button_b { axis = Vec3::Z; } else if button_u || button_d { axis = Vec3::Y; } else { axis = Vec3::X; }
 
-    let limit = if positive { 2.20 } else { -2.20 };
-    if button_prime { direction = -1.0 } else { direction = 1.0 };
-    if button_f || button_r || button_u { direction *= -1.0 };
-    //if button_alt && (button_b || button_r || button_u) { direction *= -1.0; } // both axes move in same direction
-    // forward axis is regular, back axis is reversed
-    if button_alt { 
-      direction *= -1.0; 
-      if button_b || button_f { direction *= -1.0; }
-    }
+  for (mut transform, _cube, mut move_node) in &mut cubes {
 
-    if button_f || button_b { axis = Vec3::Z; } else if button_u || button_d { axis = Vec3::Y; } else { axis = Vec3::X; }
     let comparison = match axis {
       Vec3::X => transform.translation.x,
       Vec3::Y => transform.translation.y,
@@ -316,10 +338,10 @@ fn cube_control(
       _ => 0.0,
     };
 
-    if (!button_alt && comparison == limit) || ((button_wide || button_alt) && comparison == 0.0) {
+    if (!button_middle && comparison == limit) || ((button_wide || button_middle) && comparison == 0.0) {
       move_node.active = true;
       
-      let (tl, rt) = fetch_target(&mut transform, axis, direction);
+      let (tl, rt) = fetch_target(&mut transform, axis, direction, agg_mov.double);
       move_node.target = Target { translation: tl, rotation: rt };
     }
     
@@ -328,46 +350,71 @@ fn cube_control(
   agg_mov.axis = axis;
   agg_mov.direction = direction;
   agg_mov.positive = positive;
+
+  agg_mov.turn_timer.reset();
+  agg_mov.double_timer.reset();
+}
+
+/* MARK: TOGGLE DOUBLE
+ */
+fn toggle_double_turn(
+  kbd: Res<ButtonInput<KeyCode>>,
+  mut agg_mov: ResMut<AggregateMovement>,
+  binds: Res<ControlSettings>,
+) {
+
+  if agg_mov.scramble > 0 { return }
+  let mut double = agg_mov.double;
+  let button_double = kbd.just_pressed(binds.settings.button_toggle_double.unwrap());
+
+  if button_double { double = !double } else { return }
+
+  agg_mov.double = double;
+  if double {
+    agg_mov.speed = DOUBLE_SPEED;
+  }
+  else {
+    agg_mov.speed = TURN_SPEED;
+  }
 }
 
 /* MARK: SCRAMBLE CTRL
  */
 fn scramble_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&Block, &ControlBinds)>,
   mut agg_mov: ResMut<AggregateMovement>,
+  binds: Res<ControlSettings>,
 ) {
-
-  for (_cube, binds) in &mut cubes {
-
-    if binds.button_scramble.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      agg_mov.active = false;
-      agg_mov.scramble = 100;
-      agg_mov.speed = SCRAMBLE_SPEED;
-    }
+  
+  if binds.settings.button_scramble.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
+    agg_mov.active = false;
+    agg_mov.scramble = 100;
+    agg_mov.speed = SCRAMBLE_SPEED;
   }
+  
 }
 
 /* MARK: RESET CTRL
  */
 fn reset_cube(
   kbd: Res<ButtonInput<KeyCode>>,
-  mut cubes: Query<(&mut Transform, &Block, &ControlBinds, &DefaultPosition, &mut MovementNode)>,
+  mut cubes: Query<(&mut Transform, &Block, &DefaultPosition, &mut MovementNode)>,
   mut agg_mov: ResMut<AggregateMovement>,
+  binds: Res<ControlSettings>,
 ) {
 
-  for (mut transform, _cube, binds, default, mut move_node) in &mut cubes {
+  if !binds.settings.button_reset.map(|key| kbd.just_pressed(key)).unwrap_or(false) { return }
 
-    if binds.button_reset.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
-      agg_mov.active = false;
-      agg_mov.scramble = 0;
-      agg_mov.speed = TURN_SPEED;
-      agg_mov.axis = Vec3::ZERO;
-      transform.translation = default.0;
-      transform.rotation = Quat::IDENTITY;
-      move_node.active = false;
-    }
+  agg_mov.active = false;
+  agg_mov.scramble = 0;
+  agg_mov.speed = if agg_mov.double { DOUBLE_SPEED } else { TURN_SPEED };
+  agg_mov.axis = Vec3::ZERO;
 
+  for (mut transform, _cube, default, mut move_node) in &mut cubes {
+    transform.translation = default.0;
+    transform.rotation = Quat::IDENTITY;
+
+    move_node.active = false;
   }
   
 }
@@ -384,10 +431,11 @@ fn rotate_cube(
 
   if !agg_mov.active || agg_mov.scramble > 0 { return }
 
-  agg_mov.speed = 420.0;
+  //agg_mov.speed = 420.0;
   let mut close = false;
 
   agg_mov.turn_timer.tick(time.delta());
+  agg_mov.double_timer.tick(time.delta());
 
   for (mut transform, _cube, mut move_node) in &mut cubes {
 
@@ -395,7 +443,9 @@ fn rotate_cube(
 
       transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(agg_mov.axis, agg_mov.direction * agg_mov.speed.to_radians() * time.delta_seconds()));
 
-      if agg_mov.turn_timer.just_finished() {
+      if (!agg_mov.double && agg_mov.turn_timer.just_finished()) ||
+        (agg_mov.double && agg_mov.double_timer.just_finished()) 
+      {
         move_node.active = false;
         close = true;
 
@@ -437,7 +487,7 @@ fn rotate_scramble(
         _       => transform.translation.z
       };
       if comparison == limit {
-        let (tl, rt) = fetch_target(&mut transform, axis, direction);
+        let (tl, rt) = fetch_target(&mut transform, axis, direction, agg_mov.double);
         move_node.target = Target { translation: tl, rotation: rt };
         move_node.active = true;
       }
@@ -500,14 +550,16 @@ fn randomize_vars(rng: &mut ResMut<GlobalEntropy<ChaCha8Rng>>) -> (Vec3, bool, f
 }
 
 /* Use mutable transform to find exact translation and rotation after 90° rotation is completed in future (with time.delta()) */
-fn fetch_target(transform: &mut Transform, axis: Vec3, direction: f32) -> (Vec3, Quat) {
+fn fetch_target(transform: &mut Transform, axis: Vec3, direction: f32, double: bool) -> (Vec3, Quat) {
 
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians()));
+  let angle: f32 = if double { 180.0 } else { 90.0 };
+
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * angle.to_radians()));
 
   let tl = transform.translation;
   let rt = transform.rotation;
   // return to same position as beginning of frame
-  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * 90.0f32.to_radians() * -1.0));
+  transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(axis, direction * angle.to_radians() * -1.0));
 
   ((tl * 10.0).round() / 10.0, rt)
 }
