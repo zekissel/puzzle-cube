@@ -50,7 +50,7 @@ struct AggregateMovement {
 
   // used on player-initiated turns
   axis: Vec3,
-  positive: bool,
+  positive: bool, // positive quadrant or not
   direction: f32,
   turn_timer: Timer,
 
@@ -69,6 +69,8 @@ struct Target {
 }
 
 /* MARK: ROTATION NODE
+
+  TARGET marks where individual cubes should be after rotation timer ends (snap cubes into place)
 */
 #[derive(Component)]
 struct MovementNode {
@@ -85,7 +87,7 @@ impl Default for MovementNode {
   }
 }
 
-
+// used to reset cube positions
 #[derive(Component, Default)]
 struct DefaultPosition(Vec3);
 
@@ -104,6 +106,7 @@ struct ControlBinds {
 
   button_prime: Option<KeyCode>,
   button_wide: Option<KeyCode>,
+  button_alt: Option<KeyCode>,
 
   button_reset: Option<KeyCode>,
   button_scramble: Option<KeyCode>,
@@ -125,6 +128,7 @@ impl Default for ControlBinds {
 
       button_prime: Some(KeyCode::ShiftLeft),
       button_wide: Some(KeyCode::ControlLeft),
+      button_alt: Some(KeyCode::AltLeft),
 
       button_reset: Some(KeyCode::KeyR),
       button_scramble: Some(KeyCode::KeyT),
@@ -148,6 +152,7 @@ struct BlockBundle {
 enum UnpackBlocks { Center, Edge, Corner }
 /* MARK: CUBE SETUP
 */
+// use part (and file) names defined in setup_cube() to create blocks in correct position
 fn unpack_coords(name: &str, area: UnpackBlocks) -> (f32, f32, f32) {
 
   let mut index = 0;
@@ -203,6 +208,7 @@ fn setup_cube(
       _ => UnpackBlocks::Center,
     });
 
+    // bring blocks into game world
     commands.spawn(BlockBundle { 
       scene_bundle: SceneBundle {
         scene: part_handle,
@@ -290,10 +296,17 @@ fn cube_control(
 
     let button_prime = kbd.pressed(binds.button_prime.unwrap());
     let button_wide = kbd.pressed(binds.button_wide.unwrap());
+    let button_alt = kbd.pressed(binds.button_alt.unwrap());
 
     let limit = if positive { 2.20 } else { -2.20 };
     if button_prime { direction = -1.0 } else { direction = 1.0 };
     if button_f || button_r || button_u { direction *= -1.0 };
+    //if button_alt && (button_b || button_r || button_u) { direction *= -1.0; } // both axes move in same direction
+    // forward axis is regular, back axis is reversed
+    if button_alt { 
+      direction *= -1.0; 
+      if button_b || button_f { direction *= -1.0; }
+    }
 
     if button_f || button_b { axis = Vec3::Z; } else if button_u || button_d { axis = Vec3::Y; } else { axis = Vec3::X; }
     let comparison = match axis {
@@ -303,7 +316,7 @@ fn cube_control(
       _ => 0.0,
     };
 
-    if (comparison == limit) || (button_wide && comparison == 0.0) {
+    if (!button_alt && comparison == limit) || ((button_wide || button_alt) && comparison == 0.0) {
       move_node.active = true;
       
       let (tl, rt) = fetch_target(&mut transform, axis, direction);
@@ -376,18 +389,18 @@ fn rotate_cube(
 
   agg_mov.turn_timer.tick(time.delta());
 
-  for (mut transform, _cube, mut b_rotate) in &mut cubes {
+  for (mut transform, _cube, mut move_node) in &mut cubes {
 
-    if b_rotate.active {
+    if move_node.active {
 
       transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(agg_mov.axis, agg_mov.direction * agg_mov.speed.to_radians() * time.delta_seconds()));
 
       if agg_mov.turn_timer.just_finished() {
-        b_rotate.active = false;
+        move_node.active = false;
         close = true;
 
-        transform.translation = b_rotate.target.translation;
-        transform.rotation = b_rotate.target.rotation;
+        transform.translation = move_node.target.translation;
+        transform.rotation = move_node.target.rotation;
       }
     }
   }
@@ -441,17 +454,17 @@ fn rotate_scramble(
 
     agg_mov.scramble_turn_timer.tick(time.delta());
 
-    for (mut transform, _cube, mut b_rotate) in &mut cubes {
+    for (mut transform, _cube, mut move_node) in &mut cubes {
 
-      if b_rotate.active {
+      if move_node.active {
         transform.rotate_around(Vec3::ZERO, Quat::from_axis_angle(agg_mov.axis, agg_mov.direction * agg_mov.speed.to_radians() * time.delta_seconds()));
   
         if agg_mov.scramble_turn_timer.just_finished() {
           stop_rotate = true;
-          b_rotate.active = false;
+          move_node.active = false;
   
-          transform.translation = b_rotate.target.translation;
-          transform.rotation = b_rotate.target.rotation;
+          transform.translation = move_node.target.translation;
+          transform.rotation = move_node.target.rotation;
       
           if agg_mov.scramble == 0 {
             close = true;

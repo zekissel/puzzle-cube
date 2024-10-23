@@ -22,6 +22,13 @@ const DEFAULT_YAW: f32 = 45.0;
 const MIN_ZOOM: f32 = 60.0;
 const MAX_ZOOM: f32 = 15.0;
 
+const ORBIT_SENSITIVITY: f32 = 0.5f32;
+const ZOOM_SENSITIVITY: f32 = 0.01;
+
+const SCROLL_LINE_SENSITIVITY: f32 = 16.0;
+const SCROLL_PIXEL_SENSITIVITY: f32 = 1.0;
+
+
 #[derive(Bundle, Default)]
 pub struct OrbitCameraBundle {
   pub camera: Camera3dBundle,
@@ -39,10 +46,6 @@ pub struct OrbitState {
 
 #[derive(Component)]
 pub struct OrbitSettings {
-
-  pub orbit_sensitivity: f32, /// Radians per pixel of mouse motion
-  pub zoom_sensitivity: f32, /// Exponent per pixel of mouse motion
-
   pub reset_rotate: Option<KeyCode>,
   pub reset_rotate_m: Option<MouseButton>,
 
@@ -54,8 +57,8 @@ pub struct OrbitSettings {
   pub orbit_key: Option<MouseButton>,
   pub scroll_action: Option<OrbitAction>,
   
-  pub scroll_line_sensitivity: f32, // notched scroll wheel (desktops)
-  pub scroll_pixel_sensitivity: f32, // smooth scroll (touchpads)
+  //pub scroll_line_sensitivity: f32, // notched scroll wheel (desktops)
+  //pub scroll_pixel_sensitivity: f32, // smooth scroll (touchpads)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,18 +82,14 @@ impl Default for OrbitState {
 impl Default for OrbitSettings {
   fn default() -> Self {
     OrbitSettings {
-      orbit_sensitivity: 0.5f32.to_radians(), // 0.1 degree per pixel
-      zoom_sensitivity: 0.01,
       reset_rotate: Some(KeyCode::Home),
       reset_rotate_m: Some(MouseButton::Right),
       rotate_left: Some(KeyCode::Delete),
       rotate_right: Some(KeyCode::Insert),
       rotate_up: Some(KeyCode::PageUp),
       rotate_down: Some(KeyCode::PageDown),
-      orbit_key: Some(MouseButton::Middle),
+      orbit_key: Some(MouseButton::Left),
       scroll_action: Some(OrbitAction::Zoom),
-      scroll_line_sensitivity: 16.0, // 1 "line" == 16 "pixels of motion"
-      scroll_pixel_sensitivity: 1.0,
     }
   }
 }
@@ -141,7 +140,7 @@ pub fn orbit_camera_control(
   {
     let mut total_orbit = Vec2::ZERO;
     if settings.orbit_key.map(|mb| mouse.pressed(mb)).unwrap_or(false) {
-      total_orbit -= total_motion * settings.orbit_sensitivity;
+      total_orbit -= total_motion * ORBIT_SENSITIVITY.to_radians();
     }
 
     if settings.rotate_left.map(|key| kbd.pressed(key)).unwrap_or(false) {
@@ -161,8 +160,8 @@ pub fn orbit_camera_control(
     let mut total_zoom = Vec2::ZERO;
 
     if settings.scroll_action == Some(OrbitAction::Zoom) {
-      total_zoom -= total_scroll_lines * settings.scroll_line_sensitivity * settings.zoom_sensitivity;
-      total_zoom -= total_scroll_pixels * settings.scroll_pixel_sensitivity * settings.zoom_sensitivity;
+      total_zoom -= total_scroll_lines * SCROLL_LINE_SENSITIVITY * ZOOM_SENSITIVITY;
+      total_zoom -= total_scroll_pixels * SCROLL_PIXEL_SENSITIVITY * ZOOM_SENSITIVITY;
     }
 
     // Upon starting a new orbit maneuver, check if we are starting it upside-down
