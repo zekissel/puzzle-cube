@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, time::Stopwatch};
 use bevy_prng::ChaCha8Rng;
 use bevy_rand::prelude::GlobalEntropy;
 use rand_core::{RngCore, SeedableRng};
@@ -13,6 +13,8 @@ const TURN_DELAY: f32 = 0.14;
 const DOUBLE_DELAY: f32 = 0.18;
 const SCRAMBLE_DELAY: f32 = 0.075;
 
+const SCRAMBLE_NUM: i32 = 3;
+
 /* MARK: CUBE PLUGIN
 */
 pub struct CubeModels;
@@ -26,8 +28,10 @@ impl Plugin for CubeModels {
       cube_control.run_if(any_with_component::<Block>),
       scramble_cube.run_if(any_with_component::<Block>),
       rotate_scramble.run_if(any_with_component::<Block>),
+      pregame.run_if(any_with_component::<Block>),
       (toggle_double_turn.run_if(any_with_component::<Block>),
-      rotate_cube.run_if(any_with_component::<Block>)).chain(),
+      rotate_cube.run_if(any_with_component::<Block>), 
+      check_cube.run_if(any_with_component::<Block>)).chain(),
     ));
     app.insert_resource(AggregateMovement { 
       active: false, 
@@ -44,6 +48,12 @@ impl Plugin for CubeModels {
     app.insert_resource(ControlSettings {
       settings: ControlBinds::default(),
     });
+    app.insert_resource(GameSettings {
+      clock: Stopwatch::default(),
+      pregame: Timer::from_seconds(15.0, TimerMode::Once),
+      shuffle: SCRAMBLE_NUM,
+    });
+
     app.insert_resource(GlobalEntropy::new(ChaCha8Rng::seed_from_u64(0)));
   }
 }
@@ -71,6 +81,13 @@ struct AggregateMovement {
 #[derive(Resource)]
 struct ControlSettings {
   settings: ControlBinds,
+}
+
+#[derive(Resource)]
+struct GameSettings {
+  clock: Stopwatch,
+  pregame: Timer,
+  shuffle: i32,
 }
 
 #[derive(Component)]
@@ -295,6 +312,7 @@ fn cube_control(
   mut cubes: Query<(&mut Transform, &Block, &mut MovementNode)>,
   mut agg_mov: ResMut<AggregateMovement>,
   binds: Res<ControlSettings>,
+  mut game: ResMut<GameSettings>,
 ) {
 
   if agg_mov.active { return }
@@ -306,6 +324,7 @@ fn cube_control(
   );
   if button_f || button_b || button_u || button_d || button_r || button_l { agg_mov.active = true; } else { return }
 
+  if !game.pregame.finished() || !game.pregame.paused() { game.pregame.pause(); game.clock.reset(); }
 
   let axis: Vec3;
   let mut direction: f32;
@@ -384,11 +403,12 @@ fn scramble_cube(
   kbd: Res<ButtonInput<KeyCode>>,
   mut agg_mov: ResMut<AggregateMovement>,
   binds: Res<ControlSettings>,
+  game: Res<GameSettings>,
 ) {
   
   if binds.settings.button_scramble.map(|key| kbd.just_pressed(key)).unwrap_or(false) {
     agg_mov.active = false;
-    agg_mov.scramble = 100;
+    agg_mov.scramble = game.shuffle;
     agg_mov.speed = SCRAMBLE_SPEED;
   }
   
@@ -467,6 +487,7 @@ fn rotate_scramble(
   time: Res<Time>,
   mut agg_mov: ResMut<AggregateMovement>,
   mut rng: ResMut<GlobalEntropy<ChaCha8Rng>>,
+  mut game: ResMut<GameSettings>,
 ) {
   if agg_mov.scramble == 0 { return }
 
@@ -530,9 +551,52 @@ fn rotate_scramble(
       agg_mov.axis = Vec3::ZERO;
       agg_mov.direction = 0.0;
       agg_mov.positive = true;
+
+      game.pregame.reset();
+      game.pregame.unpause();
     }
   }
     
+}
+
+fn pregame(
+  mut game: ResMut<GameSettings>,
+  time: Res<Time>,
+) {
+
+  if game.pregame.finished() || game.pregame.paused() { game.clock.tick(time.delta()); }
+  else { game.pregame.tick(time.delta()); }
+
+  if game.pregame.just_finished() {
+    game.pregame.pause();
+    game.clock.reset();
+
+  }
+}
+
+fn check_cube(
+  cubes: Query<(&Transform, &Block, &DefaultPosition)>,
+  agg_mov: Res<AggregateMovement>,
+  game: ResMut<GameSettings>,
+) {
+  
+  if agg_mov.active || game.clock.elapsed().as_secs_f32() == 0.0 { return }
+
+  for (transform, _cube, default) in &cubes {
+    let (rx, ry, rz) = transform.rotation.to_euler(EulerRot::XYZ);
+    if transform.translation != default.0 || rx != 0.0 || ry != 0.0 || rz != 0.0 {
+      println!("actual {}", transform.translation);
+      println!("recorded default {}", default.0);
+      println!("");
+      println!("actual rot {}", transform.rotation);
+      println!("default {}", Quat::IDENTITY);
+      println!("");
+      println!("");
+      return;
+    }
+  }
+
+  println!("WINNER WINNER CHICKEN DINNER, {}", game.clock.elapsed().as_secs());
 }
 
 // MARK: UTIL
